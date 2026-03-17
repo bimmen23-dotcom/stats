@@ -30,6 +30,9 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
     private var activeModules: [Module] {
         modules.filter({ $0.enabled }).sorted(by: { $0.combinedPosition < $1.combinedPosition })
     }
+    private var visibleModules: [Module] {
+        self.activeModules.filter({ $0.menuBar.view.frame.width > 0 })
+    }
     
     private var combinedModulesPopup: Bool {
         get { Store.shared.bool(key: "CombinedModules_popup", defaultValue: true) }
@@ -69,35 +72,6 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
     }
     
     public func enable() {
-        self.menuBarItem = NSStatusBar.system.statusItem(withLength: 0)
-        DispatchQueue.main.async(execute: {
-            self.menuBarItem?.autosaveName = "CombinedModules"
-        })
-        self.menuBarItem?.button?.addSubview(self.view)
-        self.menuBarItem?.button?.image = NSImage()
-        self.menuBarItem?.button?.toolTip = localizedString("Combined modules")
-        
-        if !self.combinedModulesPopup {
-            self.activeModules.forEach { (m: Module) in
-                m.menuBar.widgets.forEach { w in
-                    w.item.onClick = {
-                        if let window = w.item.window {
-                            NotificationCenter.default.post(name: .togglePopup, object: nil, userInfo: [
-                                "module": m.name,
-                                "widget": w.type,
-                                "origin": window.frame.origin,
-                                "center": window.frame.width/2
-                            ])
-                        }
-                    }
-                }
-            }
-        } else {
-            self.menuBarItem?.button?.target = self
-            self.menuBarItem?.button?.action = #selector(self.togglePopup)
-            self.menuBarItem?.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
-        }
-        
         DispatchQueue.main.async(execute: {
             self.recalculate()
         })
@@ -109,10 +83,7 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
                 w.item.onClick = nil
             }
         }
-        if let item = self.menuBarItem {
-            NSStatusBar.system.removeStatusItem(item)
-        }
-        self.menuBarItem = nil
+        self.removeMenuBarItem()
     }
     
     private func recalculate() {
@@ -120,7 +91,7 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
         
         var w: CGFloat = 0
         var i: Int = 0
-        let visibleModules = self.activeModules.filter { $0.menuBar.view.frame.width > 0 }
+        let visibleModules = self.visibleModules
         visibleModules.forEach { (m: Module) in
             self.view.addSubview(m.menuBar.view)
             self.view.subviews[i].setFrameOrigin(NSPoint(x: w, y: 0))
@@ -137,7 +108,87 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
             }
         }
         self.view.setFrameSize(NSSize(width: w, height: self.view.frame.height))
-        self.menuBarItem?.length = w
+        self.syncMenuBarItemVisibility(length: w)
+    }
+
+    private func ensureMenuBarItem(length: CGFloat) {
+        if self.menuBarItem == nil {
+            self.restoreMenuBarItemPosition()
+            self.menuBarItem = NSStatusBar.system.statusItem(withLength: length)
+            DispatchQueue.main.async(execute: {
+                self.menuBarItem?.autosaveName = "CombinedModules"
+            })
+            self.menuBarItem?.isVisible = true
+            self.view.removeFromSuperview()
+            self.menuBarItem?.button?.addSubview(self.view)
+            self.menuBarItem?.button?.image = NSImage()
+            self.menuBarItem?.button?.toolTip = localizedString("Combined modules")
+        }
+        self.menuBarItem?.length = length
+        if let item = self.menuBarItem, !item.isVisible {
+            self.menuBarItem?.isVisible = true
+        }
+        self.configureInteractions()
+    }
+
+    private func removeMenuBarItem() {
+        guard let item = self.menuBarItem else { return }
+        self.saveMenuBarItemPosition()
+        NSStatusBar.system.removeStatusItem(item)
+        self.menuBarItem = nil
+    }
+
+    private func syncMenuBarItemVisibility(length: CGFloat) {
+        guard self.status, length > 0 else {
+            self.removeMenuBarItem()
+            return
+        }
+        self.ensureMenuBarItem(length: length)
+    }
+
+    private func configureInteractions() {
+        if !self.combinedModulesPopup {
+            self.activeModules.forEach { (m: Module) in
+                m.menuBar.widgets.forEach { w in
+                    w.item.onClick = {
+                        if let window = w.item.window {
+                            NotificationCenter.default.post(name: .togglePopup, object: nil, userInfo: [
+                                "module": m.name,
+                                "widget": w.type,
+                                "origin": window.frame.origin,
+                                "center": window.frame.width/2
+                            ])
+                        }
+                    }
+                }
+            }
+            self.menuBarItem?.button?.target = nil
+            self.menuBarItem?.button?.action = nil
+        } else {
+            self.activeModules.forEach { (m: Module) in
+                m.menuBar.widgets.forEach { w in
+                    w.item.onClick = nil
+                }
+            }
+            self.menuBarItem?.button?.target = self
+            self.menuBarItem?.button?.action = #selector(self.togglePopup)
+            self.menuBarItem?.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
+        }
+    }
+
+    private func saveMenuBarItemPosition() {
+        let position = Store.shared.int(key: "NSStatusItem Preferred Position CombinedModules", defaultValue: -1)
+        if position != -1 {
+            Store.shared.set(key: "NSStatusItem Restore Position CombinedModules", value: position)
+        }
+    }
+
+    private func restoreMenuBarItemPosition() {
+        let previousPosition = Store.shared.int(key: "NSStatusItem Restore Position CombinedModules", defaultValue: -1)
+        if previousPosition != -1 {
+            Store.shared.set(key: "NSStatusItem Preferred Position CombinedModules", value: previousPosition)
+            Store.shared.remove("NSStatusItem Restore Position CombinedModules")
+        }
     }
     
     // call when popup appear/disappear
@@ -184,33 +235,7 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
     }
     
     @objc private func listenCombinedModulesPopup() {
-        if !self.combinedModulesPopup {
-            self.activeModules.forEach { (m: Module) in
-                m.menuBar.widgets.forEach { w in
-                    w.item.onClick = {
-                        if let window = w.item.window {
-                            NotificationCenter.default.post(name: .togglePopup, object: nil, userInfo: [
-                                "module": m.name,
-                                "widget": w.type,
-                                "origin": window.frame.origin,
-                                "center": window.frame.width/2
-                            ])
-                        }
-                    }
-                }
-            }
-            self.menuBarItem?.button?.action = nil
-        } else {
-            self.activeModules.forEach { (m: Module) in
-                m.menuBar.widgets.forEach { w in
-                    w.item.onClick = nil
-                }
-            }
-            
-            self.menuBarItem?.button?.target = self
-            self.menuBarItem?.button?.action = #selector(self.togglePopup)
-            self.menuBarItem?.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
-        }
+        self.configureInteractions()
     }
     
     @objc private func listenForModule(_ notification: Notification) {
@@ -231,6 +256,7 @@ internal class CombinedView: NSObject, NSGestureRecognizerDelegate {
                 }
             }
         }
+        self.configureInteractions()
     }
 }
 

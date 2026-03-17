@@ -455,8 +455,6 @@ public class MenuBar {
         
         if self.combinedModules {
             self.oneView = true
-        } else {
-            self.setupMenuBarItem(self.oneView)
         }
         
         NotificationCenter.default.addObserver(self, selector: #selector(listenForOneView), name: .toggleOneView, object: nil)
@@ -510,11 +508,11 @@ public class MenuBar {
     }
     
     public func enable() {
-        if self.oneView && !self.combinedModules {
-            self.setupMenuBarItem(true)
-        }
         self.active = true
         self.widgets.forEach{ $0.enable() }
+        if self.oneView {
+            self.recalculateWidth()
+        }
         self.callback?()
     }
     
@@ -522,34 +520,48 @@ public class MenuBar {
         self.widgets.forEach{ $0.disable() }
         self.active = false
         if self.oneView {
-            self.setupMenuBarItem(false)
+            self.syncMenuBarItemVisibility(length: 0)
         }
         self.callback?()
     }
     
-    private func setupMenuBarItem(_ state: Bool) {
+    private func ensureMenuBarItem(length: CGFloat) {
+        if self.menuBarItem == nil {
+            restoreNSStatusItemPosition(id: self.moduleName)
+            self.menuBarItem = NSStatusBar.system.statusItem(withLength: length)
+            DispatchQueue.main.async(execute: {
+                self.menuBarItem?.autosaveName = self.moduleName
+            })
+            self.menuBarItem?.isVisible = true
+            
+            self.view.removeFromSuperview()
+            self.menuBarItem?.button?.addSubview(self.view)
+            self.menuBarItem?.button?.image = NSImage()
+            self.menuBarItem?.button?.toolTip = "\(localizedString(self.moduleName))"
+            self.menuBarItem?.button?.target = self
+            self.menuBarItem?.button?.action = #selector(self.togglePopup)
+            self.menuBarItem?.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
+        }
+        self.menuBarItem?.length = length
+        if let item = self.menuBarItem, !item.isVisible {
+            self.menuBarItem?.isVisible = true
+        }
+    }
+
+    private func removeMenuBarItem() {
+        guard let item = self.menuBarItem else { return }
+        saveNSStatusItemPosition(id: self.moduleName)
+        NSStatusBar.system.removeStatusItem(item)
+        self.menuBarItem = nil
+    }
+
+    private func syncMenuBarItemVisibility(length: CGFloat) {
         DispatchQueue.main.async(execute: {
-            if state && self.active {
-                restoreNSStatusItemPosition(id: self.moduleName)
-                self.menuBarItem = NSStatusBar.system.statusItem(withLength: 0)
-                DispatchQueue.main.async(execute: {
-                    self.menuBarItem?.autosaveName = self.moduleName
-                })
-                self.menuBarItem?.isVisible = true
-                
-                self.menuBarItem?.button?.addSubview(self.view)
-                self.menuBarItem?.button?.image = NSImage()
-                self.menuBarItem?.button?.toolTip = "\(localizedString(self.moduleName))"
-                self.menuBarItem?.button?.target = self
-                self.menuBarItem?.button?.action = #selector(self.togglePopup)
-                self.menuBarItem?.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
-                
-                self.recalculateWidth()
-            } else if let item = self.menuBarItem {
-                saveNSStatusItemPosition(id: self.moduleName)
-                NSStatusBar.system.removeStatusItem(item)
-                self.menuBarItem = nil
+            guard self.oneView, self.active, !self.combinedModules, !self.visibleWidgets.isEmpty else {
+                self.removeMenuBarItem()
+                return
             }
+            self.ensureMenuBarItem(length: length)
         })
     }
     
@@ -565,11 +577,11 @@ public class MenuBar {
                 (CGFloat(visibleWidgets.count - 1) * Constants.Widget.spacing) +
                 Constants.Widget.spacing * 2
         }
-        self.menuBarItem?.length = w
         self.view.setFrameOrigin(NSPoint(x: 0, y: 0))
         self.view.setFrameSize(NSSize(width: w, height: Constants.Widget.height))
         
         self.view.recalculate(self.sortedWidgets)
+        self.syncMenuBarItemVisibility(length: w)
         self.callback?()
     }
     
@@ -598,10 +610,10 @@ public class MenuBar {
         
         if self.combinedModules {
             self.oneView = true
-            self.setupMenuBarItem(false)
+            self.syncMenuBarItemVisibility(length: 0)
         } else if self.active {
             self.oneView = Store.shared.bool(key: "\(self.moduleName)_oneView", defaultValue: self.oneView)
-            self.setupMenuBarItem(self.oneView)
+            self.syncMenuBarItemVisibility(length: 0)
         }
         
         self.activeWidgets.forEach { (w: SWidget) in
